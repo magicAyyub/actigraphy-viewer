@@ -1,34 +1,37 @@
+"use client"
 import Link from "next/link"
 import { cn } from "@/lib/utils"
+import { Activity, Table2 } from "lucide-react"
+import { usePathname } from "next/navigation"
 
 export function MainNav({
   className,
   ...props
 }: React.HTMLAttributes<HTMLElement>) {
+  const pathname = usePathname()
+  
   return (
-    <nav
-      className={cn("flex items-center space-x-4 lg:space-x-6", className)}
-      {...props}
-    >
+    <nav className={cn("flex items-center space-x-6", className)} {...props}>
       <Link
         href="/"
-        className="text-sm font-medium transition-colors hover:text-primary"
+        className={cn(
+          "flex items-center space-x-2 text-sm font-medium transition-colors hover:text-primary",
+          pathname === "/" ? "text-primary" : "text-muted-foreground"
+        )}
       >
-        Accueil
-      </Link>
-      <Link
-        href="/fenetres-analyse"
-        className="text-sm font-medium text-muted-foreground transition-colors hover:text-primary"
-      >
-        Fenêtres d&apos;Analyse
+        <Activity className="h-4 w-4" />
+        <span>Données d&apos;Actigraphie</span>
       </Link>
       <Link
         href="/donnees-tabulaires"
-        className="text-sm font-medium text-muted-foreground transition-colors hover:text-primary"
+        className={cn(
+          "flex items-center space-x-2 text-sm font-medium transition-colors hover:text-primary",
+          pathname === "/donnees-tabulaires" ? "text-primary" : "text-muted-foreground"
+        )}
       >
-        Données Tabulaires
+        <Table2 className="h-4 w-4" />
+        <span>Données Tabulaires</span>
       </Link>
     </nav>
   )
 }
-

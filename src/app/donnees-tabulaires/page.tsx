@@ -490,7 +490,7 @@ const handleFeatureImportance = async () => {
   return (
     <ToastProvider>
           <div className="space-y-6">
-          <h1 className="text-3xl font-bold">Advanced Data Explorer (En anglais désolé apprend aussi mdrr)</h1>
+          <h1 className="text-3xl font-bold">Explorateur de données CSV (En anglais désolé apprend aussi mdrr)</h1>
         
         <Card className="bg-white/50 backdrop-blur-sm">
           <CardHeader>
