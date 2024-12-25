@@ -47,7 +47,7 @@ export default function AdvancedDataExplorer() {
   const [correlation, setCorrelation] = useState<number | null>(null)
   const [showOutliers, setShowOutliers] = useState(false)
   const [dataPreview, setDataPreview] = useState<ParsedData[]>([])
-  const [toast, setToast] = useState<{ title: string; description: string } | null>(null)
+  const [toast, setToast] = useState<{ title: string; description: string, variant: string } | null>(null)
   const [imputationMethod, setImputationMethod] = useState<string>('mean')
   const [isProcessing, setIsProcessing] = useState(false);
   const [scaleMethod, setScaleMethod] = useState<'minmax' | 'standard' | 'robust'>('minmax');
@@ -137,7 +137,8 @@ const handleFeatureImportance = async () => {
     
     setToast({ 
       title: "Data Updated", 
-      description: "All visualizations and statistics have been refreshed." 
+      description: "All visualizations and statistics have been refreshed." ,
+      variant: "success"
     });
   };  
 
@@ -398,7 +399,7 @@ const handleFeatureImportance = async () => {
         setSelectedScatterX(numCols[0] || '');
         setSelectedScatterY(numCols[1] || numCols[0] || '');
         setDataPreview(parsedData.slice(0, 5));
-        setToast({ title: "Data Loaded", description: `Successfully loaded ${parsedData.length} rows of data.` });
+        setToast({ title: "Data Loaded", description: `Successfully loaded ${parsedData.length} rows of data.`, variant: "success" });
       },
       header: false
     });
@@ -417,12 +418,12 @@ const handleFeatureImportance = async () => {
       link.click();
       document.body.removeChild(link);
     }
-    setToast({ title: "Data Exported", description: "Your data has been successfully exported as a CSV file." });
+    setToast({ title: "Data Exported", description: "Your data has been successfully exported as a CSV file.", variant: "success" });
   }
 
   const handleMissingValues = async () => {
     if (!selectedColumn) {
-      setToast({ title: "Error", description: "Please select a column for imputation." });
+      setToast({ title: "Error", description: "Please select a column for imputation.", variant: "error" });
       return;
     }
     
@@ -452,13 +453,15 @@ const handleFeatureImportance = async () => {
       setDataPreview(newData.slice(0, 5));
       setToast({ 
         title: "Missing Values Handled", 
-        description: `Missing values in ${selectedColumn} have been imputed using ${imputationMethod} method.` 
+        description: `Missing values in ${selectedColumn} have been imputed using ${imputationMethod} method.` ,
+        variant: "success"
       });
     } catch (error) {
       console.error('Imputation error:', error);
       setToast({ 
         title: "Error", 
-        description: "An error occurred while processing the data." 
+        description: "An error occurred while processing the data.",
+        variant: "error" 
       });
     } finally {
       setIsProcessing(false);
@@ -467,12 +470,12 @@ const handleFeatureImportance = async () => {
 
   const handleOutlierRemoval = () => {
     if (!selectedColumn || !isNumericColumn(data, selectedColumn)) {
-      setToast({ title: "Error", description: "Please select a numeric column for outlier removal." });
+      setToast({ title: "Error", description: "Please select a numeric column for outlier removal.", variant: "error" });
       return;
     }
     const nonOutliers = data.filter(row => !outliers.includes(row));
     setData(nonOutliers);
-    setToast({ title: "Outliers Removed", description: `${outliers.length} outliers have been removed from the dataset.` });
+    setToast({ title: "Outliers Removed", description: `${outliers.length} outliers have been removed from the dataset.`, variant: "success" });
   }
 
   const toggleColumnType = (column: string) => {
@@ -481,7 +484,7 @@ const handleFeatureImportance = async () => {
       : [...numericColumns, column];
     
     setNumericColumns(updatedNumericColumns);
-    setToast({ title: "Column Type Updated", description: `${column} is now treated as a ${updatedNumericColumns.includes(column) ? 'numeric' : 'non-numeric'} column.` });
+    setToast({ title: "Column Type Updated", description: `${column} is now treated as a ${updatedNumericColumns.includes(column) ? 'numeric' : 'non-numeric'} column.`, variant: "success" });
   }
 
   return (
