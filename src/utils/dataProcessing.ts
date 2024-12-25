@@ -1,4 +1,4 @@
-import { ParsedData } from "../types/data";
+import { ParsedData } from "@/types/data";
 
 export function calculateStatistics(data: ParsedData[], column: string) {
   const numericData = data
@@ -47,10 +47,6 @@ export function calculateCorrelation(data: ParsedData[], columnX: string, column
     (Math.sqrt((n * sumX2 - sumX * sumX) * (n * sumY2 - sumY * sumY)));
 
   return isNaN(correlation) ? null : correlation;
-}
-
-export function isNumericColumn(data: ParsedData[], column: string): boolean {
-  return data.some(row => !isNaN(parseFloat(row[column] as string)));
 }
 
 export function getNumericColumns(data: ParsedData[], columns: string[]): string[] {
@@ -184,5 +180,150 @@ function imputeGaussian(data: ParsedData[], column: string): ParsedData[] {
       return { ...row, [column]: imputedValue.toFixed(2) };
     }
     return row;
+  });
+}
+
+export function scaleValues(data: ParsedData[], column: string, method: 'minmax' | 'standard' | 'robust'): ParsedData[] {
+  const values = data
+    .map(row => parseFloat(row[column] as string))
+    .filter(val => !isNaN(val));
+
+  switch (method) {
+    case 'minmax': {
+      const min = Math.min(...values);
+      const max = Math.max(...values);
+      return data.map(row => ({
+        ...row,
+        [column]: !isNaN(parseFloat(row[column] as string)) 
+          ? ((parseFloat(row[column] as string) - min) / (max - min)).toFixed(4)
+          : row[column]
+      }));
+    }
+    case 'standard': {
+      const mean = values.reduce((a, b) => a + b, 0) / values.length;
+      const std = Math.sqrt(values.reduce((a, b) => a + Math.pow(b - mean, 2), 0) / values.length);
+      return data.map(row => ({
+        ...row,
+        [column]: !isNaN(parseFloat(row[column] as string))
+          ? ((parseFloat(row[column] as string) - mean) / std).toFixed(4)
+          : row[column]
+      }));
+    }
+    case 'robust': {
+      const sorted = [...values].sort((a, b) => a - b);
+      const q1 = sorted[Math.floor(sorted.length * 0.25)];
+      const q3 = sorted[Math.floor(sorted.length * 0.75)];
+      const iqr = q3 - q1;
+      return data.map(row => ({
+        ...row,
+        [column]: !isNaN(parseFloat(row[column] as string))
+          ? ((parseFloat(row[column] as string) - q1) / iqr).toFixed(4)
+          : row[column]
+      }));
+    }
+    default:
+      return data;
+  }
+}
+
+export function encodeCategorial(data: ParsedData[], column: string, method: 'label' | 'onehot'): ParsedData[] {
+  const uniqueValues = [...new Set(data.map(row => row[column]))];
+
+  switch (method) {
+    case 'label': {
+      const valueMap = new Map(uniqueValues.map((val, idx) => [val, idx]));
+      return data.map(row => ({
+        ...row,
+        [`${column}_encoded`]: valueMap.get(row[column])
+      }));
+    }
+    case 'onehot': {
+      return data.map(row => {
+        const encoded = uniqueValues.reduce((acc: { [key: string]: number }, val) => ({
+          ...acc,
+          [`${column}_${val}`]: row[column] === val ? 1 : 0
+        }), {});
+        return { ...row, ...encoded };
+      });
+    }
+    default:
+      return data;
+  }
+}
+
+export function calculateFeatureImportance(
+  data: ParsedData[], 
+  targetColumn: string, 
+  features: string[]
+): { feature: string; importance: number }[] {
+  const importanceScores = features.map(feature => {
+    let correlation = 0;
+    
+    if (isNumericColumn(data, targetColumn) && isNumericColumn(data, feature)) {
+      // For numeric target and feature, use correlation coefficient
+      correlation = Math.abs(calculateCorrelation(data, targetColumn, feature) || 0);
+    } else {
+      // For categorical variables, use Cramer's V
+      correlation = calculateCramersV(data, targetColumn, feature);
+    }
+    
+    return {
+      feature,
+      importance: correlation
+    };
+  });
+
+  return importanceScores.sort((a, b) => b.importance - a.importance);
+}
+
+function calculateCramersV(data: ParsedData[], col1: string, col2: string): number {
+  const contingencyTable = new Map<string, Map<string, number>>();
+  
+  // Build contingency table
+  data.forEach(row => {
+    const val1 = String(row[col1]);
+    const val2 = String(row[col2]);
+    
+    if (!contingencyTable.has(val1)) {
+      contingencyTable.set(val1, new Map());
+    }
+    const innerMap = contingencyTable.get(val1)!;
+    innerMap.set(val2, (innerMap.get(val2) || 0) + 1);
+  });
+
+  // Calculate chi-square
+  let chiSquare = 0;
+  const rowSums = new Map<string, number>();
+  const colSums = new Map<string, number>();
+  let total = 0;
+
+  // Calculate row and column sums
+  contingencyTable.forEach((innerMap, val1) => {
+    innerMap.forEach((count, val2) => {
+      rowSums.set(val1, (rowSums.get(val1) || 0) + count);
+      colSums.set(val2, (colSums.get(val2) || 0) + count);
+      total += count;
+    });
+  });
+
+  // Calculate chi-square statistic
+  contingencyTable.forEach((innerMap, val1) => {
+    innerMap.forEach((count, val2) => {
+      const expected = (rowSums.get(val1)! * colSums.get(val2)!) / total;
+      chiSquare += Math.pow(count - expected, 2) / expected;
+    });
+  });
+
+  // Calculate Cramer's V
+  const minDim = Math.min(rowSums.size, colSums.size) - 1;
+  const cramersV = Math.sqrt(chiSquare / (total * minDim));
+
+  return cramersV;
+}
+
+export function isNumericColumn(data: ParsedData[], column: string): boolean {
+  return data.some(row => {
+    const val = row[column];
+    return val !== null && val !== undefined && val !== '' && !isNaN(parseFloat(val as string));
   });
 }

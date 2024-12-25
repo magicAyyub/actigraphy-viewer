@@ -28,7 +28,7 @@ import {
 } from "@tanstack/react-table"
 import {  Download } from 'lucide-react'
 import { ParsedData, PapaParseResult, ColumnStatistics } from '@/types/data'
-import { calculateStatistics, detectOutliers, calculateCorrelation, isNumericColumn, getNumericColumns, formatValue, imputeMissingValues } from '@/utils/dataProcessing'
+import { calculateStatistics, detectOutliers, calculateCorrelation, isNumericColumn, getNumericColumns, formatValue, imputeMissingValues, scaleValues, encodeCategorial, calculateFeatureImportance } from '@/utils/dataProcessing'
 
 
 export default function AdvancedDataExplorer() {
@@ -50,34 +50,96 @@ export default function AdvancedDataExplorer() {
   const [toast, setToast] = useState<{ title: string; description: string } | null>(null)
   const [imputationMethod, setImputationMethod] = useState<string>('mean')
   const [isProcessing, setIsProcessing] = useState(false);
+  const [scaleMethod, setScaleMethod] = useState<'minmax' | 'standard' | 'robust'>('minmax');
+  const [encodeMethod, setEncodeMethod] = useState<'label' | 'onehot'>('label');
+  const [targetColumn, setTargetColumn] = useState('');
+  const [selectedFeatures, setSelectedFeatures] = useState<string[]>([]);
+  const [featureImportance, setFeatureImportance] = useState<Array<{ feature: string; importance: number }>>([]);
+  const [loadingActions, setLoadingActions] = useState<{
+    scaling: boolean;
+    encoding: boolean;
+    featureImportance: boolean;
+  }>({
+    scaling: false,
+    encoding: false,
+    featureImportance: false,
+  });
 
-  const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (!file) return;
-
-    Papa.parse(file, {
-      complete: (result: PapaParseResult) => {
-        const headers = result.data[0] as string[];
-        const parsedData: ParsedData[] = result.data.slice(1).map((row, index) => {
-          const rowData: ParsedData = { id: index };
-          headers.forEach((header, i) => {
-            rowData[header] = row[i];
-          });
-          return rowData;
-        });
-        setData(parsedData);
-        setColumns(headers);
-        const numCols = getNumericColumns(parsedData, headers);
-        setNumericColumns(numCols);
-        setSelectedColumn(numCols[0] || '');
-        setSelectedScatterX(numCols[0] || '');
-        setSelectedScatterY(numCols[1] || numCols[0] || '');
-        setDataPreview(parsedData.slice(0, 5));
-        setToast({ title: "Data Loaded", description: `Successfully loaded ${parsedData.length} rows of data.` });
-      },
-      header: false
+  const handleColumnDrop = (column: string) => {
+    const newData = data.map(row => {
+      const { [column]: removed, ...rest } = row;
+      return rest;
     });
+    const newColumns = columns.filter(col => col !== column);
+    
+    updateDataState(newData, newColumns);
   };
+ // Update handlers with loading states
+const handleScaling = async () => {
+  if (!selectedColumn) return;
+  setLoadingActions(prev => ({ ...prev, scaling: true }));
+  
+  await new Promise(resolve => setTimeout(resolve, 1000));
+  const scaledData = scaleValues(data, selectedColumn, scaleMethod);
+  updateDataState(scaledData, columns);
+  
+  setLoadingActions(prev => ({ ...prev, scaling: false }));
+};
+
+const handleEncoding = async () => {
+  if (!selectedColumn) return;
+  setLoadingActions(prev => ({ ...prev, encoding: true }));
+  
+  await new Promise(resolve => setTimeout(resolve, 1000));
+  const encodedData = encodeCategorial(data, selectedColumn, encodeMethod);
+  const cleanData = encodedData.map(row => {
+    const { _imputed, [selectedColumn]: original, ...rest } = row;
+    return encodeMethod === 'onehot' ? rest : row;
+  });
+  
+  updateDataState(cleanData, Object.keys(cleanData[0]));
+  setLoadingActions(prev => ({ ...prev, encoding: false }));
+};
+
+const handleFeatureImportance = async () => {
+  if (!targetColumn || selectedFeatures.length === 0) return;
+  setLoadingActions(prev => ({ ...prev, featureImportance: true }));
+  
+  await new Promise(resolve => setTimeout(resolve, 1000));
+  const importance = calculateFeatureImportance(data, targetColumn, selectedFeatures);
+  setFeatureImportance(importance);
+  
+  setLoadingActions(prev => ({ ...prev, featureImportance: false }));
+};
+  
+  // Helper function to update all data-dependent states
+  const updateDataState = (newData: ParsedData[], newColumns: string[]) => {
+    setData(newData);
+    setColumns(newColumns);
+    setDataPreview(newData.slice(0, 5));
+    
+    // Update numeric columns
+    const numCols = getNumericColumns(newData, newColumns);
+    setNumericColumns(numCols);
+    
+    // Update statistics if needed
+    if (selectedColumn && isNumericColumn(newData, selectedColumn)) {
+      setStatistics(calculateStatistics(newData, selectedColumn));
+      setOutliers(detectOutliers(newData, selectedColumn));
+    }
+    
+    // Update correlation if needed
+    if (selectedScatterX && selectedScatterY && 
+        isNumericColumn(newData, selectedScatterX) && 
+        isNumericColumn(newData, selectedScatterY)) {
+      setCorrelation(calculateCorrelation(newData, selectedScatterX, selectedScatterY));
+    }
+    
+    setToast({ 
+      title: "Data Updated", 
+      description: "All visualizations and statistics have been refreshed." 
+    });
+  };  
 
   useEffect(() => {
     if (selectedColumn && isNumericColumn(data, selectedColumn)) {
@@ -282,6 +344,66 @@ export default function AdvancedDataExplorer() {
     );
   };
 
+  const renderMissingValues = () => {
+    const missingData = columns.map(column => {
+      const totalRows = data.length;
+      const missingCount = data.filter(row => 
+        row[column] === null || 
+        row[column] === undefined || 
+        row[column] === '' || 
+        row[column] === 'N/A'
+      ).length;
+      return {
+        column,
+        missing: missingCount,
+        percentage: (missingCount / totalRows) * 100
+      };
+    }).sort((a, b) => b.percentage - a.percentage);
+  
+    return (
+      <div className="space-y-4">
+        <h3 className="text-lg font-semibold">Missing Values Distribution</h3>
+        {missingData.map(({ column, missing, percentage }) => (
+          <div key={column} className="space-y-1">
+            <div className="flex justify-between text-sm">
+              <span>{column}</span>
+              <span>{missing} rows ({percentage.toFixed(1)}%)</span>
+            </div>
+            <Progress value={percentage} className="h-2" />
+          </div>
+        ))}
+      </div>
+    );
+  };
+
+  const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    Papa.parse(file, {
+      complete: (result: PapaParseResult) => {
+        const headers = result.data[0] as string[];
+        const parsedData: ParsedData[] = result.data.slice(1).map((row, index) => {
+          const rowData: ParsedData = { id: index };
+          headers.forEach((header, i) => {
+            rowData[header] = row[i];
+          });
+          return rowData;
+        });
+        setData(parsedData);
+        setColumns(headers);
+        const numCols = getNumericColumns(parsedData, headers);
+        setNumericColumns(numCols);
+        setSelectedColumn(numCols[0] || '');
+        setSelectedScatterX(numCols[0] || '');
+        setSelectedScatterY(numCols[1] || numCols[0] || '');
+        setDataPreview(parsedData.slice(0, 5));
+        setToast({ title: "Data Loaded", description: `Successfully loaded ${parsedData.length} rows of data.` });
+      },
+      header: false
+    });
+  }
+
   const handleDownload = () => {
     const csv = Papa.unparse(data);
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
@@ -364,8 +486,8 @@ export default function AdvancedDataExplorer() {
 
   return (
     <ToastProvider>
-      <div className="space-y-6 p-6  min-h-screen">
-        <h1 className="text-4xl font-bold text-center text-blue-800">Advanced Data Explorer</h1>
+          <div className="space-y-6">
+          <h1 className="text-3xl font-bold">Advanced Data Explorer (En anglais désolé apprend aussi mdrr)</h1>
         
         <Card className="bg-white/50 backdrop-blur-sm">
           <CardHeader>
@@ -404,7 +526,7 @@ export default function AdvancedDataExplorer() {
             )}
           </CardContent>
         </Card>
-
+ 
         {data.length > 0 && (
           <Tabs defaultValue="overview" className="space-y-4">
             <TabsList className="grid w-full grid-cols-4">
@@ -413,7 +535,7 @@ export default function AdvancedDataExplorer() {
               <TabsTrigger value="visualization">Visualization</TabsTrigger>
               <TabsTrigger value="preprocessing">Preprocessing</TabsTrigger>
             </TabsList>
-
+ 
             <TabsContent value="overview">
               <Card className="bg-white/50 backdrop-blur-sm">
                 <CardHeader>
@@ -455,7 +577,7 @@ export default function AdvancedDataExplorer() {
                 </CardContent>
               </Card>
             </TabsContent>
-
+ 
             <TabsContent value="analysis">
               <Card className="bg-white/50 backdrop-blur-sm">
                 <CardHeader>
@@ -523,70 +645,74 @@ export default function AdvancedDataExplorer() {
                 </CardContent>
               </Card>
             </TabsContent>
-
+ 
             <TabsContent value="visualization">
-        <Card className="bg-white/50 backdrop-blur-sm">
-          <CardHeader>
-            <CardTitle>Data Visualization</CardTitle>
-            <CardDescription>Visualize your data with charts</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <Tabs defaultValue="bar">
-              <TabsList>
-                <TabsTrigger value="bar">Bar Chart</TabsTrigger>
-                <TabsTrigger value="scatter">Scatter Plot</TabsTrigger>
-                <TabsTrigger value="heatmap">Correlation Heatmap</TabsTrigger>
-              </TabsList>
-              <TabsContent value="bar">
-                <div className="space-y-4">
-                  <Select onValueChange={setSelectedColumn} value={selectedColumn}>
-                    <SelectTrigger className="w-[200px]">
-                      <SelectValue placeholder="Select a column" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {numericColumns.map((column) => (
-                        <SelectItem key={column} value={column}>{column}</SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  {renderBarChart()}
-                </div>
-              </TabsContent>
-              <TabsContent value="scatter">
-                <div className="space-y-4">
-                  <div className="flex space-x-2">
-                    <Select onValueChange={setSelectedScatterX} value={selectedScatterX}>
-                      <SelectTrigger className="w-[150px]">
-                        <SelectValue placeholder="X Axis" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {numericColumns.map((column) => (
-                          <SelectItem key={column} value={column}>{column}</SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                    <Select onValueChange={setSelectedScatterY} value={selectedScatterY}>
-                      <SelectTrigger className="w-[150px]">
-                        <SelectValue placeholder="Y Axis" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {numericColumns.map((column) => (
-                          <SelectItem key={column} value={column}>{column}</SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  {renderScatterPlot()}
-                </div>
-              </TabsContent>
-              <TabsContent value="heatmap">
-                {renderHeatMap()}
-              </TabsContent>
-            </Tabs>
-          </CardContent>
-        </Card>
-      </TabsContent>
-
+              <Card className="bg-white/50 backdrop-blur-sm">
+                <CardHeader>
+                  <CardTitle>Data Visualization</CardTitle>
+                  <CardDescription>Visualize your data with charts</CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <Tabs defaultValue="bar">
+                    <TabsList>
+                      <TabsTrigger value="bar">Bar Chart</TabsTrigger>
+                      <TabsTrigger value="scatter">Scatter Plot</TabsTrigger>
+                      <TabsTrigger value="heatmap">Correlation Heatmap</TabsTrigger>
+                      <TabsTrigger value="missing">Missing Values</TabsTrigger>
+                    </TabsList>
+                    <TabsContent value="bar">
+                      <div className="space-y-4">
+                        <Select onValueChange={setSelectedColumn} value={selectedColumn}>
+                          <SelectTrigger className="w-[200px]">
+                            <SelectValue placeholder="Select a column" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {numericColumns.map((column) => (
+                              <SelectItem key={column} value={column}>{column}</SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                        {renderBarChart()}
+                      </div>
+                    </TabsContent>
+                    <TabsContent value="scatter">
+                      <div className="space-y-4">
+                        <div className="flex space-x-2">
+                          <Select onValueChange={setSelectedScatterX} value={selectedScatterX}>
+                            <SelectTrigger className="w-[150px]">
+                              <SelectValue placeholder="X Axis" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {numericColumns.map((column) => (
+                                <SelectItem key={column} value={column}>{column}</SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                          <Select onValueChange={setSelectedScatterY} value={selectedScatterY}>
+                            <SelectTrigger className="w-[150px]">
+                              <SelectValue placeholder="Y Axis" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {numericColumns.map((column) => (
+                                <SelectItem key={column} value={column}>{column}</SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                        {renderScatterPlot()}
+                      </div>
+                    </TabsContent>
+                    <TabsContent value="heatmap">
+                      {renderHeatMap()}
+                    </TabsContent>
+                    <TabsContent value="missing">
+                      {renderMissingValues()}
+                    </TabsContent>
+                  </Tabs>
+                </CardContent>
+              </Card>
+            </TabsContent>
+ 
             <TabsContent value="preprocessing">
               <Card className="bg-white/50 backdrop-blur-sm">
                 <CardHeader>
@@ -594,146 +720,322 @@ export default function AdvancedDataExplorer() {
                   <CardDescription>Prepare your data for analysis</CardDescription>
                 </CardHeader>
                 <CardContent>
-                  <div className="space-y-4">
-                    <div className="flex items-center space-x-2">
-                      <Switch id="outliers" checked={showOutliers} onCheckedChange={setShowOutliers} />
-                      <Label htmlFor="outliers">Show Outliers</Label>
-                    </div>
-                    <div className="flex items-center space-x-2">
-                      <Select onValueChange={setSelectedColumn} value={selectedColumn}>
-                        <SelectTrigger className="w-[200px]">
-                          <SelectValue placeholder="Select a column" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {columns.map((column) => (
-                            <SelectItem key={column} value={column}>{column}</SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                      <Select onValueChange={setImputationMethod} value={imputationMethod}>
-                        <SelectTrigger className="w-[200px]">
-                          <SelectValue placeholder="Select imputation method" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {isNumericColumn(data, selectedColumn) ? (
+                  <Tabs defaultValue="basic">
+                    <TabsList>
+                      <TabsTrigger value="basic">Basic</TabsTrigger>
+                      <TabsTrigger value="transform">Transform</TabsTrigger>
+                      <TabsTrigger value="encode">Encode</TabsTrigger>
+                      <TabsTrigger value="importance">Feature Importance</TabsTrigger>
+                    </TabsList>
+ 
+                    <TabsContent value="basic">
+                      <div className="space-y-4">
+                        <div className="flex items-center space-x-2">
+                          <Switch id="outliers" checked={showOutliers} onCheckedChange={setShowOutliers} />
+                          <Label htmlFor="outliers">Show Outliers</Label>
+                        </div>
+                        <div className="flex items-center space-x-2">
+                          <Select onValueChange={setSelectedColumn} value={selectedColumn}>
+                            <SelectTrigger className="w-[200px]">
+                              <SelectValue placeholder="Select a column" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {columns.map((column) => (
+                                <SelectItem key={column} value={column}>{column}</SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                          <Select onValueChange={setImputationMethod} value={imputationMethod}>
+                            <SelectTrigger className="w-[200px]">
+                              <SelectValue placeholder="Select imputation method" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {isNumericColumn(data, selectedColumn) ? (
+                                <>
+                                  <SelectItem value="mean">Mean</SelectItem>
+                                  <SelectItem value="median">Median</SelectItem>
+                                  <SelectItem value="mode">Mode</SelectItem>
+                                  <SelectItem value="gaussian">Gaussian</SelectItem>
+                                </>
+                              ) : (
+                                <SelectItem value="mode">Mode</SelectItem>
+                              )}
+                            </SelectContent>
+                          </Select>
+                          <Button 
+                            onClick={handleMissingValues}
+                            disabled={isProcessing}
+                            className="relative"
+                          >
+                            {isProcessing ? (
+                              <>
+                                <span className="absolute inset-0 flex items-center justify-center bg-primary/90 rounded-md">
+                                  <svg className="animate-spin h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                  </svg>
+                                </span>
+                                <span className="opacity-0">Handle Missing Values</span>
+                              </>
+                            ) : (
+                              'Handle Missing Values'
+                            )}
+                          </Button>
+                        </div>
+                        <Button onClick={handleOutlierRemoval} disabled={!isNumericColumn(data, selectedColumn)}>
+                          Remove Outliers
+                        </Button>
+                      </div>
+                    </TabsContent>
+ 
+                    <TabsContent value="transform">
+                      <div className="space-y-4">
+                        <div className="flex items-center space-x-4">
+                          <Select value={selectedColumn} onValueChange={setSelectedColumn}>
+                            <SelectTrigger className="w-[200px]">
+                              <SelectValue placeholder="Select column" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {columns.map(column => (
+                                <SelectItem key={column} value={column}>{column}</SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+ 
+                          <Select value={scaleMethod} onValueChange={(value) => setScaleMethod(value as 'minmax' | 'standard' | 'robust')}>
+                            <SelectTrigger className="w-[200px]">
+                              <SelectValue placeholder="Select scaling method" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="minmax">Min-Max Scaling</SelectItem>
+                              <SelectItem value="standard">Standard Scaling</SelectItem>
+                              <SelectItem value="robust">Robust Scaling</SelectItem>
+                            </SelectContent>
+                          </Select>
+ 
+                          <Button 
+                            onClick={handleScaling} 
+                            disabled={loadingActions.scaling}
+                            className="relative"
+                          >
+                            {loadingActions.scaling ? (
+                              <>
+                                <span className="absolute inset-0 flex items-center justify-center bg-primary/90 rounded-md">
+                                  <svg className="animate-spin h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                  </svg>
+                                </span>
+                                <span className="opacity-0">Scale Values</span>
+                              </>
+                            ) : (
+                              'Scale Values'
+                            )}
+                          </Button>
+                          <Button 
+                            variant="destructive" 
+                            onClick={() => handleColumnDrop(selectedColumn)}
+                          >
+                            Drop Column
+                          </Button>
+                        </div>
+                      </div>
+                    </TabsContent>
+ 
+                    <TabsContent value="encode">
+                      <div className="space-y-4">
+                        <div className="flex items-center space-x-4">
+                          <Select value={selectedColumn} onValueChange={setSelectedColumn}>
+                            <SelectTrigger className="w-[200px]">
+                              <SelectValue placeholder="Select column" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {columns.map(column => (
+                                <SelectItem key={column} value={column}>{column}</SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+ 
+                          <Select value={encodeMethod} onValueChange={(value) => setEncodeMethod(value as 'label' | 'onehot')}>
+                          <SelectTrigger className="w-[200px]">
+                             <SelectValue placeholder="Select encoding method" />
+                           </SelectTrigger>
+                           <SelectContent>
+                             <SelectItem value="label">Label Encoding</SelectItem>
+                             <SelectItem value="onehot">One-Hot Encoding</SelectItem>
+                           </SelectContent>
+                         </Select>
+
+                         <Button onClick={handleEncoding} disabled={loadingActions.encoding} className="relative">
+                           {loadingActions.encoding ? (
+                             <>
+                               <span className="absolute inset-0 flex items-center justify-center bg-primary/90 rounded-md">
+                                 <svg className="animate-spin h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                   <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                                   <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                 </svg>
+                               </span>
+                               <span className="opacity-0">Encode Categorical</span>
+                             </>
+                           ) : (
+                             'Encode Categorical'
+                           )}
+                          </Button>
+                       </div>
+                     </div>
+                   </TabsContent>
+
+                   <TabsContent value="importance">
+                     <div className="space-y-4">
+                       <div className="grid grid-cols-2 gap-4">
+                         <div>
+                           <Select value={targetColumn} onValueChange={setTargetColumn}>
+                             <SelectTrigger>
+                               <SelectValue placeholder="Select target column" />
+                             </SelectTrigger>
+                             <SelectContent>
+                               {columns.map(column => (
+                                 <SelectItem key={column} value={column}>{column}</SelectItem>
+                               ))}
+                             </SelectContent>
+                           </Select>
+                         </div>
+                         <div className="flex flex-wrap gap-2">
+                           {columns
+                             .filter(col => col !== targetColumn)
+                             .map(feature => (
+                               <Badge
+                                 key={feature}
+                                 variant={selectedFeatures.includes(feature) ? "default" : "outline"}
+                                 className="cursor-pointer"
+                                 onClick={() => {
+                                   setSelectedFeatures(prev =>
+                                     prev.includes(feature)
+                                       ? prev.filter(f => f !== feature)
+                                       : [...prev, feature]
+                                   );
+                                 }}
+                               >
+                                 {feature}
+                               </Badge>
+                             ))}
+                         </div>
+                       </div>
+                       <Button onClick={handleFeatureImportance} disabled={loadingActions.featureImportance} className="relative">
+                          {loadingActions.featureImportance ? (
                             <>
-                              <SelectItem value="mean">Mean</SelectItem>
-                              <SelectItem value="median">Median</SelectItem>
-                              <SelectItem value="mode">Mode</SelectItem>
-                              <SelectItem value="gaussian">Gaussian</SelectItem>
+                              <span className="absolute inset-0 flex items-center justify-center bg-primary/90 rounded-md">
+                                <svg className="animate-spin h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                </svg>
+                              </span>
+                              <span className="opacity-0">Calculate Importance</span>
                             </>
                           ) : (
-                            <SelectItem value="mode">Mode</SelectItem>
+                            'Calculate Feature Importance'
                           )}
-                        </SelectContent>
-                      </Select>
-                      <Button 
-                        onClick={handleMissingValues}
-                        disabled={isProcessing}
-                        className="relative"
-                      >
-                        {isProcessing ? (
-                          <>
-                            <span className="absolute inset-0 flex items-center justify-center bg-primary/90 rounded-md">
-                              <svg className="animate-spin h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                              </svg>
-                            </span>
-                            <span className="opacity-0">Handle Missing Values</span>
-                          </>
-                        ) : (
-                          'Handle Missing Values'
-                        )}
-                      </Button>
-                    </div>
-                    <Button onClick={handleOutlierRemoval} disabled={!isNumericColumn(data, selectedColumn)}>
-                      Remove Outliers
-                    </Button>
-                    <div className="rounded-md border">
-                      <Table>
-                        <TableHeader>
-                          {table.getHeaderGroups().map((headerGroup) => (
-                            <TableRow key={headerGroup.id}>
-                              {headerGroup.headers.map((header) => {
-                                return (
-                                  <TableHead key={header.id}>
-                                    {header.isPlaceholder
-                                      ? null
-                                      : flexRender(
-                                          header.column.columnDef.header,
-                                          header.getContext()
-                                        )}
-                                  </TableHead>
-                                )
-                              })}
-                            </TableRow>
-                          ))}
-                        </TableHeader>
-                        <TableBody>
-                          {table.getRowModel().rows?.length ? (
-                            table.getRowModel().rows.map((row) => (
-                              <TableRow
-                                key={row.id}
-                                data-state={row.getIsSelected() && "selected"}
-                              >
-                                {row.getVisibleCells().map((cell) => (
-                                  <TableCell key={cell.id}>
-                                    {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                                  </TableCell>
-                                ))}
-                              </TableRow>
-                            ))
-                          ) : (
-                            <TableRow>
-                              <TableCell colSpan={columns.length} className="h-24 text-center">
-                                No results.
-                              </TableCell>
-                            </TableRow>
-                          )}
-                        </TableBody>
-                      </Table>
-                    </div>
-                    <div className="flex items-center justify-end space-x-2 py-4">
-                      <div className="flex-1 text-sm text-muted-foreground">
-                        {table.getFilteredSelectedRowModel().rows.length} of{" "}
-                        {table.getFilteredRowModel().rows.length} row(s) selected.
-                      </div>
-                      <div className="space-x-2">
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => table.previousPage()}
-                          disabled={!table.getCanPreviousPage()}
-                        >
-                          Previous
                         </Button>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => table.nextPage()}
-                          disabled={!table.getCanNextPage()}
-                        >
-                          Next
-                        </Button>
-                      </div>
-                    </div>
-                  </div>
-                </CardContent>
-              </Card>
-            </TabsContent>
-          </Tabs>
-        )}
-      </div>
-      {toast && (
-        <Toast>
-          <ToastTitle>{toast.title}</ToastTitle>
-          <ToastDescription>{toast.description}</ToastDescription>
-          <ToastClose onClick={() => setToast(null)} />
-        </Toast>
-      )}
-      <ToastViewport />
-    </ToastProvider>
-  )
+
+                       {featureImportance.length > 0 && (
+                         <div className="mt-4">
+                           <h3 className="text-lg font-semibold mb-2">Feature Importance</h3>
+                           <div className="space-y-2">
+                             {featureImportance.map(({ feature, importance }) => (
+                               <div key={feature} className="flex items-center space-x-2">
+                                 <span className="w-32 truncate">{feature}</span>
+                                 <Progress value={importance * 100} className="flex-1" />
+                                 <span className="w-16 text-right">{(importance * 100).toFixed(1)}%</span>
+                               </div>
+                             ))}
+                           </div>
+                         </div>
+                       )}
+                     </div>
+                   </TabsContent>
+                 </Tabs>
+
+                 <div className="rounded-md border mt-4">
+                   <Table>
+                     <TableHeader>
+                       {table.getHeaderGroups().map((headerGroup) => (
+                         <TableRow key={headerGroup.id}>
+                           {headerGroup.headers.map((header) => (
+                             <TableHead key={header.id}>
+                               {header.isPlaceholder
+                                 ? null
+                                 : flexRender(
+                                     header.column.columnDef.header,
+                                     header.getContext()
+                                   )}
+                             </TableHead>
+                           ))}
+                         </TableRow>
+                       ))}
+                     </TableHeader>
+                     <TableBody>
+                       {table.getRowModel().rows?.length ? (
+                         table.getRowModel().rows.map((row) => (
+                           <TableRow
+                             key={row.id}
+                             data-state={row.getIsSelected() && "selected"}
+                           >
+                             {row.getVisibleCells().map((cell) => (
+                               <TableCell key={cell.id}>
+                                 {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                               </TableCell>
+                             ))}
+                           </TableRow>
+                         ))
+                       ) : (
+                         <TableRow>
+                           <TableCell colSpan={columns.length} className="h-24 text-center">
+                             No results.
+                           </TableCell>
+                         </TableRow>
+                       )}
+                     </TableBody>
+                   </Table>
+                 </div>
+                 <div className="flex items-center justify-end space-x-2 py-4">
+                   <div className="flex-1 text-sm text-muted-foreground">
+                     {table.getFilteredSelectedRowModel().rows.length} of{" "}
+                     {table.getFilteredRowModel().rows.length} row(s) selected.
+                   </div>
+                   <div className="space-x-2">
+                     <Button
+                       variant="outline"
+                       size="sm"
+                       onClick={() => table.previousPage()}
+                       disabled={!table.getCanPreviousPage()}
+                     >
+                       Previous
+                     </Button>
+                     <Button
+                       variant="outline"
+                       size="sm"
+                       onClick={() => table.nextPage()}
+                       disabled={!table.getCanNextPage()}
+                     >
+                       Next
+                     </Button>
+                   </div>
+                 </div>
+               </CardContent>
+             </Card>
+           </TabsContent>
+         </Tabs>
+       )}
+     </div>
+     {toast && (
+       <Toast>
+         <ToastTitle>{toast.title}</ToastTitle>
+         <ToastDescription>{toast.description}</ToastDescription>
+         <ToastClose onClick={() => setToast(null)} />
+       </Toast>
+     )}
+     <ToastViewport />
+   </ToastProvider>
+ )
 }
 

@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect } from 'react'
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ReferenceArea } from 'recharts'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Slider } from "@/components/ui/slider"
 import { Switch } from "@/components/ui/switch"
 import { Label } from "@/components/ui/label"
@@ -32,7 +32,7 @@ const generateActigraphyData = (hours = 24) => {
 }
 
 export default function FenetresAnalyse() {
-  const [data, setData] = useState([])
+  const [data, setData] = useState<{ timestamp: string; timeValue: number; X: number; Y: number; Z: number; enmo: number; anglez: number; }[]>([])
   const [windowSize, setWindowSize] = useState(4) // heures
   const [stride, setStride] = useState(2) // heures
   const [currentWindow, setCurrentWindow] = useState(0)
