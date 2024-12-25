@@ -10,10 +10,9 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Badge } from "@/components/ui/badge"
 import { Progress } from "@/components/ui/progress"
-import { Slider } from "@/components/ui/slider"
 import { Switch } from "@/components/ui/switch"
 import { Label } from "@/components/ui/label"
-import { ToastProvider, ToastViewport, Toast, ToastTitle, ToastDescription, ToastClose, ToastAction } from "@/components/ui/toast"
+import { ToastProvider, ToastViewport, Toast, ToastTitle, ToastDescription, ToastClose } from "@/components/ui/toast"
 import Papa from 'papaparse'
 import {
   ColumnDef,
@@ -27,15 +26,10 @@ import {
   getSortedRowModel,
   useReactTable,
 } from "@tanstack/react-table"
-import {
-  DropdownMenu,
-  DropdownMenuCheckboxItem,
-  DropdownMenuContent,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu"
-import { ChevronDown, Download, Upload } from 'lucide-react'
+import {  Download } from 'lucide-react'
 import { ParsedData, PapaParseResult, ColumnStatistics } from '@/types/data'
-import { calculateStatistics, detectOutliers, calculateCorrelation, isNumericColumn, getNumericColumns, formatValue } from '@/utils/dataProcessing'
+import { calculateStatistics, detectOutliers, calculateCorrelation, isNumericColumn, getNumericColumns, formatValue, imputeMissingValues } from '@/utils/dataProcessing'
+
 
 export default function AdvancedDataExplorer() {
   const [data, setData] = useState<ParsedData[]>([])
@@ -54,6 +48,8 @@ export default function AdvancedDataExplorer() {
   const [showOutliers, setShowOutliers] = useState(false)
   const [dataPreview, setDataPreview] = useState<ParsedData[]>([])
   const [toast, setToast] = useState<{ title: string; description: string } | null>(null)
+  const [imputationMethod, setImputationMethod] = useState<string>('mean')
+  const [isProcessing, setIsProcessing] = useState(false);
 
   const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -108,11 +104,18 @@ export default function AdvancedDataExplorer() {
     header: column,
     cell: ({ row }) => {
       const value = row.getValue(column);
-      const formattedValue = formatValue(value);
+      const formattedValue = formatValue(value as string | number | null | undefined);
       const isSpecial = formattedValue === 'N/A' || formattedValue === 'Invalid';
+      const wasImputed = row.original._imputed?.[column];
       return (
-        <span className={isSpecial ? 'text-red-500 font-bold' : ''}>
+        <span className={`
+          ${isSpecial ? 'text-red-500 font-bold' : ''} 
+          ${wasImputed ? 'bg-green-100 px-2 py-1 rounded' : ''}
+        `}>
           {formattedValue}
+          {wasImputed && (
+            <span className="ml-1 text-xs text-green-600">(imputed)</span>
+          )}
         </span>
       );
     },
@@ -137,13 +140,14 @@ export default function AdvancedDataExplorer() {
     },
   })
 
+
   const renderBarChart = () => {
-    if (!selectedColumn || !isNumericColumn(data, selectedColumn)) return null
+    if (!selectedColumn || !isNumericColumn(data, selectedColumn)) return null;
 
     const chartData = data.map(row => ({
       id: row.id,
       [selectedColumn]: parseFloat(row[selectedColumn] as string)
-    })).filter(row => !isNaN(row[selectedColumn]))
+    })).filter(row => !isNaN(row[selectedColumn]));
 
     return (
       <div className="h-[400px]">
@@ -158,33 +162,125 @@ export default function AdvancedDataExplorer() {
           </BarChart>
         </ResponsiveContainer>
       </div>
-    )
-  }
+    );
+  };
 
   const renderScatterPlot = () => {
     if (!selectedScatterX || !selectedScatterY || 
         !isNumericColumn(data, selectedScatterX) || 
-        !isNumericColumn(data, selectedScatterY)) return null
+        !isNumericColumn(data, selectedScatterY)) return null;
 
     const chartData = data.map(row => ({
       x: parseFloat(row[selectedScatterX] as string),
-      y: parseFloat(row[selectedScatterY] as string)
-    })).filter(row => !isNaN(row.x) && !isNaN(row.y))
+      y: parseFloat(row[selectedScatterY] as string),
+    })).filter(row => !isNaN(row.x) && !isNaN(row.y));
+
+    const colors = {
+      x: '#8884d8',  // Color for X-axis column
+      y: '#82ca9d',  // Color for Y-axis column
+    };
 
     return (
       <div className="h-[400px]">
         <ResponsiveContainer width="100%" height="100%">
           <ScatterChart>
             <CartesianGrid />
-            <XAxis type="number" dataKey="x" name={selectedScatterX} />
-            <YAxis type="number" dataKey="y" name={selectedScatterY} />
-            <Tooltip cursor={{ strokeDasharray: '3 3' }} />
-            <Scatter name="Data" data={chartData} fill="#8884d8" />
+            <XAxis 
+              type="number" 
+              dataKey="x" 
+              name={selectedScatterX}
+              label={{ value: selectedScatterX, position: 'bottom' }} 
+            />
+            <YAxis 
+              type="number" 
+              dataKey="y" 
+              name={selectedScatterY}
+              label={{ value: selectedScatterY, angle: -90, position: 'left' }}
+            />
+            <Tooltip 
+              cursor={{ strokeDasharray: '3 3' }}
+              content={({ payload }) => {
+                if (!payload || !payload[0]) return null;
+                const data = payload[0].payload;
+                return (
+                  <div className="bg-white p-2 border rounded shadow">
+                    <p className="text-sm">{`${selectedScatterX}: ${data.x.toFixed(2)}`}</p>
+                    <p className="text-sm">{`${selectedScatterY}: ${data.y.toFixed(2)}`}</p>
+                  </div>
+                );
+              }}
+            />
+            <Legend />
+            <Scatter name={selectedScatterX} data={chartData} fill={colors.x}>
+              {chartData.map((entry, index) => (
+                <circle key={`x-${index}`} cx={0} cy={0} r={4} fill={colors.x} />
+              ))}
+            </Scatter>
+            <Scatter name={selectedScatterY} data={chartData} fill={colors.y}>
+              {chartData.map((entry, index) => (
+                <circle key={`y-${index}`} cx={0} cy={0} r={4} fill={colors.y} />
+              ))}
+            </Scatter>
           </ScatterChart>
         </ResponsiveContainer>
       </div>
-    )
-  }
+    );
+  };
+
+  const renderHeatMap = () => {
+    if (numericColumns.length < 2) return null;
+
+    const correlationMatrix = numericColumns.map(col1 => 
+      numericColumns.map(col2 => {
+        const corr = calculateCorrelation(data, col1, col2);
+        return corr === null ? 0 : corr;
+      })
+    );
+
+    return (
+      <div className="overflow-x-auto">
+        <div className="min-w-[600px]">
+          <table className="w-full border-collapse">
+            <thead>
+              <tr>
+                <th className="p-2"></th>
+                {numericColumns.map(col => (
+                  <th key={col} className="p-2 text-xs rotate-45 origin-bottom-left">
+                    {col}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {numericColumns.map((row, i) => (
+                <tr key={row}>
+                  <th className="p-2 text-left text-xs">{row}</th>
+                  {correlationMatrix[i].map((correlation, j) => (
+                    <td 
+                      key={`${row}-${numericColumns[j]}`}
+                      className="p-0"
+                    >
+                      <div 
+                        className="w-12 h-12 flex items-center justify-center text-xs"
+                        style={{
+                          backgroundColor: `rgba(${correlation >= 0 
+                            ? '0, 0, 255,' 
+                            : '255, 0, 0,'}${Math.abs(correlation)})`,
+                          color: Math.abs(correlation) > 0.5 ? 'white' : 'black'
+                        }}
+                      >
+                        {correlation.toFixed(2)}
+                      </div>
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    );
+  };
 
   const handleDownload = () => {
     const csv = Papa.unparse(data);
@@ -202,19 +298,50 @@ export default function AdvancedDataExplorer() {
     setToast({ title: "Data Exported", description: "Your data has been successfully exported as a CSV file." });
   }
 
-  const handleMissingValues = () => {
-    const updatedData = data.map(row => {
-      const newRow = { ...row };
-      columns.forEach(column => {
-        if (newRow[column] === '' || newRow[column] === null || newRow[column] === undefined) {
-          newRow[column] = 'N/A';
-        }
+  const handleMissingValues = async () => {
+    if (!selectedColumn) {
+      setToast({ title: "Error", description: "Please select a column for imputation." });
+      return;
+    }
+    
+    setIsProcessing(true);
+    
+    try {
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      
+      const originalData = [...data];
+      const updatedData = imputeMissingValues(originalData, selectedColumn, imputationMethod);
+      
+      const newData = updatedData.map((row, idx) => {
+        const originalValue = originalData[idx][selectedColumn];
+        const isImputed = (originalValue === null || originalValue === undefined || originalValue === '' || originalValue === 'N/A') && 
+                         row[selectedColumn] !== originalValue;
+        
+        return {
+          ...row,
+          _imputed: {
+            ...(row._imputed || {}),
+            [selectedColumn]: isImputed
+          }
+        };
       });
-      return newRow;
-    });
-    setData(updatedData);
-    setToast({ title: "Missing Values Handled", description: "All missing values have been replaced with 'N/A'." });
-  }
+      
+      setData(newData);
+      setDataPreview(newData.slice(0, 5));
+      setToast({ 
+        title: "Missing Values Handled", 
+        description: `Missing values in ${selectedColumn} have been imputed using ${imputationMethod} method.` 
+      });
+    } catch (error) {
+      console.error('Imputation error:', error);
+      setToast({ 
+        title: "Error", 
+        description: "An error occurred while processing the data." 
+      });
+    } finally {
+      setIsProcessing(false);
+    }
+  };
 
   const handleOutlierRemoval = () => {
     if (!selectedColumn || !isNumericColumn(data, selectedColumn)) {
@@ -224,6 +351,15 @@ export default function AdvancedDataExplorer() {
     const nonOutliers = data.filter(row => !outliers.includes(row));
     setData(nonOutliers);
     setToast({ title: "Outliers Removed", description: `${outliers.length} outliers have been removed from the dataset.` });
+  }
+
+  const toggleColumnType = (column: string) => {
+    const updatedNumericColumns = numericColumns.includes(column) 
+      ? numericColumns.filter(col => col !== column)
+      : [...numericColumns, column];
+    
+    setNumericColumns(updatedNumericColumns);
+    setToast({ title: "Column Type Updated", description: `${column} is now treated as a ${updatedNumericColumns.includes(column) ? 'numeric' : 'non-numeric'} column.` });
   }
 
   return (
@@ -258,7 +394,7 @@ export default function AdvancedDataExplorer() {
                     {dataPreview.map((row, index) => (
                       <TableRow key={index}>
                         {columns.map((column) => (
-                          <TableCell key={column}>{formatValue(row[column])}</TableCell>
+                          <TableCell key={column}>{formatValue(row[column] as string | number | null | undefined)}</TableCell>
                         ))}
                       </TableRow>
                     ))}
@@ -296,9 +432,22 @@ export default function AdvancedDataExplorer() {
                       <h3 className="text-lg font-semibold mb-2">Column Types</h3>
                       <div className="space-y-2">
                         {columns.map(column => (
-                          <Badge key={column} variant={numericColumns.includes(column) ? "default" : "secondary"}>
-                            {column} ({numericColumns.includes(column) ? "Numeric" : "Non-Numeric"})
-                          </Badge>
+                          <div key={column} className="flex items-center justify-between">
+                            <Badge 
+                              variant={numericColumns.includes(column) ? "default" : "secondary"}
+                              className="cursor-pointer"
+                              onClick={() => toggleColumnType(column)}
+                            >
+                              {column} ({numericColumns.includes(column) ? "Numeric" : "Non-Numeric"})
+                            </Badge>
+                            <Button 
+                              variant="ghost" 
+                              size="sm"
+                              onClick={() => toggleColumnType(column)}
+                            >
+                              Toggle Type
+                            </Button>
+                          </div>
                         ))}
                       </div>
                     </div>
@@ -361,7 +510,9 @@ export default function AdvancedDataExplorer() {
                           </SelectContent>
                         </Select>
                       </div>
-                      {correlation !== null && (
+                      {correlation === null ? (
+                        <p className="text-muted-foreground">No correlation available</p>
+                      ) : (
                         <div className="mt-4">
                           <p>Correlation: {correlation.toFixed(4)}</p>
                           <Progress value={Math.abs(correlation) * 100} className="mt-2" />
@@ -374,63 +525,67 @@ export default function AdvancedDataExplorer() {
             </TabsContent>
 
             <TabsContent value="visualization">
-              <Card className="bg-white/50 backdrop-blur-sm">
-                <CardHeader>
-                  <CardTitle>Data Visualization</CardTitle>
-                  <CardDescription>Visualize your data with charts</CardDescription>
-                </CardHeader>
-                <CardContent>
-                  <Tabs defaultValue="bar">
-                    <TabsList>
-                      <TabsTrigger value="bar">Bar Chart</TabsTrigger>
-                      <TabsTrigger value="scatter">Scatter Plot</TabsTrigger>
-                    </TabsList>
-                    <TabsContent value="bar">
-                      <div className="space-y-4">
-                        <Select onValueChange={setSelectedColumn} value={selectedColumn}>
-                          <SelectTrigger className="w-[200px]">
-                            <SelectValue placeholder="Select a column" />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {numericColumns.map((column) => (
-                              <SelectItem key={column} value={column}>{column}</SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                        {renderBarChart()}
-                      </div>
-                    </TabsContent>
-                    <TabsContent value="scatter">
-                      <div className="space-y-4">
-                        <div className="flex space-x-2">
-                          <Select onValueChange={setSelectedScatterX} value={selectedScatterX}>
-                            <SelectTrigger className="w-[150px]">
-                              <SelectValue placeholder="X Axis" />
-                            </SelectTrigger>
-                            <SelectContent>
-                              {numericColumns.map((column) => (
-                                <SelectItem key={column} value={column}>{column}</SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
-                          <Select onValueChange={setSelectedScatterY} value={selectedScatterY}>
-                            <SelectTrigger className="w-[150px]">
-                              <SelectValue placeholder="Y Axis" />
-                            </SelectTrigger>
-                            <SelectContent>
-                              {numericColumns.map((column) => (
-                                <SelectItem key={column} value={column}>{column}</SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
-                        </div>
-                        {renderScatterPlot()}
-                      </div>
-                    </TabsContent>
-                  </Tabs>
-                </CardContent>
-              </Card>
-            </TabsContent>
+        <Card className="bg-white/50 backdrop-blur-sm">
+          <CardHeader>
+            <CardTitle>Data Visualization</CardTitle>
+            <CardDescription>Visualize your data with charts</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <Tabs defaultValue="bar">
+              <TabsList>
+                <TabsTrigger value="bar">Bar Chart</TabsTrigger>
+                <TabsTrigger value="scatter">Scatter Plot</TabsTrigger>
+                <TabsTrigger value="heatmap">Correlation Heatmap</TabsTrigger>
+              </TabsList>
+              <TabsContent value="bar">
+                <div className="space-y-4">
+                  <Select onValueChange={setSelectedColumn} value={selectedColumn}>
+                    <SelectTrigger className="w-[200px]">
+                      <SelectValue placeholder="Select a column" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {numericColumns.map((column) => (
+                        <SelectItem key={column} value={column}>{column}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  {renderBarChart()}
+                </div>
+              </TabsContent>
+              <TabsContent value="scatter">
+                <div className="space-y-4">
+                  <div className="flex space-x-2">
+                    <Select onValueChange={setSelectedScatterX} value={selectedScatterX}>
+                      <SelectTrigger className="w-[150px]">
+                        <SelectValue placeholder="X Axis" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {numericColumns.map((column) => (
+                          <SelectItem key={column} value={column}>{column}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <Select onValueChange={setSelectedScatterY} value={selectedScatterY}>
+                      <SelectTrigger className="w-[150px]">
+                        <SelectValue placeholder="Y Axis" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {numericColumns.map((column) => (
+                          <SelectItem key={column} value={column}>{column}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  {renderScatterPlot()}
+                </div>
+              </TabsContent>
+              <TabsContent value="heatmap">
+                {renderHeatMap()}
+              </TabsContent>
+            </Tabs>
+          </CardContent>
+        </Card>
+      </TabsContent>
 
             <TabsContent value="preprocessing">
               <Card className="bg-white/50 backdrop-blur-sm">
@@ -450,17 +605,50 @@ export default function AdvancedDataExplorer() {
                           <SelectValue placeholder="Select a column" />
                         </SelectTrigger>
                         <SelectContent>
-                          {numericColumns.map((column) => (
+                          {columns.map((column) => (
                             <SelectItem key={column} value={column}>{column}</SelectItem>
                           ))}
                         </SelectContent>
                       </Select>
-                      <Button onClick={handleOutlierRemoval}>
-                        Remove Outliers
+                      <Select onValueChange={setImputationMethod} value={imputationMethod}>
+                        <SelectTrigger className="w-[200px]">
+                          <SelectValue placeholder="Select imputation method" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {isNumericColumn(data, selectedColumn) ? (
+                            <>
+                              <SelectItem value="mean">Mean</SelectItem>
+                              <SelectItem value="median">Median</SelectItem>
+                              <SelectItem value="mode">Mode</SelectItem>
+                              <SelectItem value="gaussian">Gaussian</SelectItem>
+                            </>
+                          ) : (
+                            <SelectItem value="mode">Mode</SelectItem>
+                          )}
+                        </SelectContent>
+                      </Select>
+                      <Button 
+                        onClick={handleMissingValues}
+                        disabled={isProcessing}
+                        className="relative"
+                      >
+                        {isProcessing ? (
+                          <>
+                            <span className="absolute inset-0 flex items-center justify-center bg-primary/90 rounded-md">
+                              <svg className="animate-spin h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                              </svg>
+                            </span>
+                            <span className="opacity-0">Handle Missing Values</span>
+                          </>
+                        ) : (
+                          'Handle Missing Values'
+                        )}
                       </Button>
                     </div>
-                    <Button onClick={handleMissingValues}>
-                      Handle Missing Values
+                    <Button onClick={handleOutlierRemoval} disabled={!isNumericColumn(data, selectedColumn)}>
+                      Remove Outliers
                     </Button>
                     <div className="rounded-md border">
                       <Table>

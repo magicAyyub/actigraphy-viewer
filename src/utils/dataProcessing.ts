@@ -1,4 +1,4 @@
-import { ParsedData } from "@/types/data";
+import { ParsedData } from "../types/data";
 
 export function calculateStatistics(data: ParsedData[], column: string) {
   const numericData = data
@@ -32,6 +32,10 @@ export function calculateCorrelation(data: ParsedData[], columnX: string, column
   const xValues = data.map(row => parseFloat(row[columnX] as string)).filter(x => !isNaN(x));
   const yValues = data.map(row => parseFloat(row[columnY] as string)).filter(y => !isNaN(y));
 
+  if (xValues.length === 0 || yValues.length === 0) {
+    return null;
+  }
+
   const n = Math.min(xValues.length, yValues.length);
   const sumX = xValues.reduce((a, b) => a + b, 0);
   const sumY = yValues.reduce((a, b) => a + b, 0);
@@ -42,7 +46,7 @@ export function calculateCorrelation(data: ParsedData[], columnX: string, column
   const correlation = (n * sumXY - sumX * sumY) / 
     (Math.sqrt((n * sumX2 - sumX * sumX) * (n * sumY2 - sumY * sumY)));
 
-  return correlation;
+  return isNaN(correlation) ? null : correlation;
 }
 
 export function isNumericColumn(data: ParsedData[], column: string): boolean {
@@ -53,7 +57,7 @@ export function getNumericColumns(data: ParsedData[], columns: string[]): string
   return columns.filter(column => isNumericColumn(data, column));
 }
 
-export function formatValue(value: number | string | null | undefined): string {
+export function formatValue(value: string | number | null | undefined): string {
   if (value === null || value === undefined || value === '') {
     return 'N/A';
   }
@@ -63,3 +67,122 @@ export function formatValue(value: number | string | null | undefined): string {
   return String(value);
 }
 
+export function imputeMissingValues(data: ParsedData[], column: string, method: string): ParsedData[] {
+  if (!data?.length) return data;
+  
+  const hasNumericValues = data.some(row => {
+    const val = row[column];
+    return val !== null && val !== undefined && val !== '' && !isNaN(parseFloat(val as string));
+  });
+
+  if (!hasNumericValues) {
+    return imputeMode(data, column);
+  }
+
+  switch (method) {
+    case 'mean':
+      return imputeMean(data, column);
+    case 'median':
+      return imputeMedian(data, column);
+    case 'mode':
+      return imputeMode(data, column);
+    case 'gaussian':
+      return imputeGaussian(data, column);
+    default:
+      return data;
+  }
+}
+
+function imputeMean(data: ParsedData[], column: string): ParsedData[] {
+  const values = data
+    .map(row => row[column])
+    .filter(val => val !== null && val !== undefined && val !== '' && val !== 'N/A')
+    .map(val => parseFloat(val as string))
+    .filter(val => !isNaN(val));
+  
+  const mean = values.reduce((sum, val) => sum + val, 0) / values.length;
+  
+  return data.map(row => {
+    const currentValue = row[column];
+    const shouldImpute = currentValue === null || currentValue === undefined || 
+                        currentValue === '' || currentValue === 'N/A' || 
+                        isNaN(parseFloat(currentValue as string));
+    return {
+      ...row,
+      [column]: shouldImpute ? mean.toFixed(2) : currentValue
+    };
+  });
+}
+
+function imputeMedian(data: ParsedData[], column: string): ParsedData[] {
+  const values = data
+    .map(row => row[column])
+    .filter(val => val !== null && val !== undefined && val !== '' && val !== 'N/A')
+    .map(val => parseFloat(val as string))
+    .filter(val => !isNaN(val))
+    .sort((a, b) => a - b);
+  
+  const median = values[Math.floor(values.length / 2)];
+  
+  return data.map(row => {
+    const currentValue = row[column];
+    const shouldImpute = currentValue === null || currentValue === undefined || 
+                        currentValue === '' || currentValue === 'N/A' || 
+                        isNaN(parseFloat(currentValue as string));
+    return {
+      ...row,
+      [column]: shouldImpute ? median.toFixed(2) : currentValue
+    };
+  });
+}
+
+function imputeMode(data: ParsedData[], column: string): ParsedData[] {
+  const valueCount = new Map();
+  data.forEach(row => {
+    const value = row[column];
+    if (value !== null && value !== undefined && value !== '' && value !== 'N/A') {
+      valueCount.set(value, (valueCount.get(value) || 0) + 1);
+    }
+  });
+  
+  const mode = [...valueCount.entries()]
+    .sort((a, b) => b[1] - a[1])[0]?.[0] ?? '';
+    
+  return data.map(row => {
+    const currentValue = row[column];
+    const shouldImpute = currentValue === null || currentValue === undefined || 
+                        currentValue === '' || currentValue === 'N/A';
+    return {
+      ...row,
+      [column]: shouldImpute ? mode : currentValue
+    };
+  });
+}
+
+function imputeGaussian(data: ParsedData[], column: string): ParsedData[] {
+  const values = data
+    .map(row => row[column])
+    .filter(val => val !== null && val !== undefined && val !== '' && val !== 'N/A')
+    .map(val => parseFloat(val as string))
+    .filter(val => !isNaN(val));
+  
+  const mean = values.reduce((sum, val) => sum + val, 0) / values.length;
+  const variance = values.reduce((sum, val) => sum + Math.pow(val - mean, 2), 0) / values.length;
+  const stdDev = Math.sqrt(variance);
+  
+  return data.map(row => {
+    const currentValue = row[column];
+    const shouldImpute = currentValue === null || currentValue === undefined || 
+                        currentValue === '' || currentValue === 'N/A' || 
+                        isNaN(parseFloat(currentValue as string));
+                        
+    if (shouldImpute) {
+      const u1 = Math.random();
+      const u2 = Math.random();
+      const z = Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
+      const imputedValue = mean + z * stdDev;
+      return { ...row, [column]: imputedValue.toFixed(2) };
+    }
+    return row;
+  });
+}
